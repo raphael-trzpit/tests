@@ -27,13 +27,18 @@ async function syncInvoices() {
     try {
         await client.connect();
         
-        const invoices: Invoice[] = await getAllInvoices();
+        const invoices: Invoice[] = await client.query('SELECT id, customer_id, amount, date FROM invoices').then(results => results.rows);
         
         for (const invoice of invoices) {
             const hubspotInvoiceId = await searchInvoiceInHubSpot(invoice.id);
             
             if (!hubspotInvoiceId) {
-                const detailedInvoice = await getDetailedInvoice(invoice.id);
+                const detailedInvoice = await client.query(`
+                    SELECT i.id, i.customer_id, i.amount, i.date, c.name AS customer_name, c.email AS customer_email
+                    FROM invoices i
+                    JOIN customers c ON i.customer_id = c.id
+                    WHERE i.id = $1
+                `, [invoice.id]).then(results => results.rows[0]);
                 await pushInvoiceToHubSpot(detailedInvoice);
             } else {
                 console.log(`Invoice with ID ${invoice.id} already exists in HubSpot`);
@@ -48,11 +53,6 @@ async function syncInvoices() {
     }
 }
 
-async function getAllInvoices(): Promise<Invoice[]> {
-    const result = await client.query('SELECT id, customer_id, amount, date FROM invoices');
-    return result.rows;
-}
-
 async function searchInvoiceInHubSpot(invoiceId: number): Promise<number | null> {
     try {
         const response = await axios.get(`https://api.hubapi.com/crm/v3/objects/invoices?hapikey=${hubspotApiKey}&id=${invoiceId}`);
@@ -63,19 +63,6 @@ async function searchInvoiceInHubSpot(invoiceId: number): Promise<number | null>
         console.error(`Error searching invoice ${invoiceId} in HubSpot:`, error);
     }
     return null;
-}
-
-async function getDetailedInvoice(invoiceId: number): Promise<DetailedInvoice> {
-    const result = await client.query(`
-        SELECT i.id, i.customer_id, i.amount, i.date, c.name AS customer_name, c.email AS customer_email
-        FROM invoices i
-        JOIN customers c ON i.customer_id = c.id
-        WHERE i.id = $1
-    `, [invoiceId]);
-    if (result.rows.length === 0) {
-        throw new Error(`No details found for invoice ID ${invoiceId}`);
-    }
-    return result.rows[0];
 }
 
 async function pushInvoiceToHubSpot(invoice: DetailedInvoice): Promise<void> {
